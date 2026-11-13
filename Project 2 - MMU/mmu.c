@@ -25,6 +25,10 @@ void mmu(FILE *binaries, FILE *addresses, int frames, FILE *output) {
     double total_addresses = 0;
     double tlb_hits = 0;
 
+    int time = 0;
+    int *last_used = malloc(frames * sizeof(int));
+    int *frame_to_page = malloc(frames * sizeof(int));
+
     TLBEntry TLB[TLB_SIZE];
     // TLB initialization
     for (int i = 0; i < TLB_SIZE; i++) {
@@ -34,7 +38,7 @@ void mmu(FILE *binaries, FILE *addresses, int frames, FILE *output) {
     //initialize physical memory
     signed char *physical_memory = malloc(frames * 256);
 
-    if (physical_memory == NULL) {
+    if (physical_memory == NULL || last_used == NULL || frame_to_page == NULL) {
         printf("Error allocating memory.");
         return;
     }
@@ -63,17 +67,43 @@ void mmu(FILE *binaries, FILE *addresses, int frames, FILE *output) {
             tlb_hits++;
         } else {
             if (page_table[page_number] == -1) { //page fault
-                page_table[page_number] = frame_counter;
-                fseek(binaries, page_number * 256, SEEK_SET);
-                fread(&physical_memory[frame_counter*256], 1, 256, binaries);
-                frame_counter++;
                 page_faults++;
+
+                if (frame_counter < frames) { // free frame available
+                    frame = frame_counter;
+                    frame_counter++;
+                } else { // memory full -> LRU
+                    int lru_frame = 0;
+
+                    for (int i = 1; i < frames; i++) {
+                        if (last_used[i] < last_used[lru_frame]) {
+                            lru_frame = i;
+                        }
+                    }
+
+                    frame = lru_frame;
+                    int old_page = frame_to_page[frame];
+                    page_table[old_page] = -1;
+                    for (int i = 0; i < TLB_SIZE; i++) {
+                        if (TLB[i].page == old_page) {
+                            TLB[i].page = -1;
+                        }
+                    }
+                }
+
+                page_table[page_number] = frame;
+                fseek(binaries, page_number * 256, SEEK_SET);
+                fread(&physical_memory[frame*256], 1, 256, binaries);
+                frame_to_page[frame] = page_number;
             }
             frame = page_table[page_number];
             TLB[tlb_index].page = page_number;
             TLB[tlb_index].frame = frame;
             tlb_index = (tlb_index + 1) % TLB_SIZE; // increment tlb_index (basically a cache), if it hits the TLB_SIZE, it loops back around to zero.
         }
+
+        last_used[frame] = time;
+        time++;
 
         int physical_address = (frame << 8) + offset;
         int value = physical_memory[physical_address];
